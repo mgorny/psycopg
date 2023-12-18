@@ -2,13 +2,26 @@
 # from the original file 'test_cursor_server_async.py'
 # DO NOT CHANGE! Change the original file instead.
 import pytest
+from packaging.version import parse as ver
 
 import psycopg
 from psycopg import rows, errors as e
 from psycopg.pq import Format
 
+from ._test_cursor import ph
 
 pytestmark = pytest.mark.crdb_skip("server-side cursor")
+
+cursor_classes = [psycopg.ServerCursor]
+# Allow to import (not necessarily to run) the module with psycopg 3.1.
+if ver(psycopg.__version__) >= ver("3.2.0.dev0"):
+    cursor_classes.append(psycopg.RawServerCursor)
+
+
+@pytest.fixture(params=cursor_classes)
+def conn(conn, request, anyio_backend):
+    conn.server_cursor_factory = request.param
+    return conn
 
 
 def test_init_row_factory(conn):
@@ -49,7 +62,7 @@ def test_funny_name(conn):
 
 def test_repr(conn):
     cur = conn.cursor("my-name")
-    assert "psycopg.%s" % psycopg.ServerCursor.__name__ in str(cur)
+    assert "psycopg.%s" % conn.server_cursor_factory.__name__ in str(cur)
     assert "my-name" in repr(cur)
     cur.close()
 
@@ -84,7 +97,7 @@ def test_format(conn):
 def test_query_params(conn):
     with conn.cursor("foo") as cur:
         assert cur._query is None
-        cur.execute("select generate_series(1, %s) as bar", (3,))
+        cur.execute(ph(cur, "select generate_series(1, %s) as bar"), (3,))
         assert cur._query is not None
         assert b"declare" in cur._query.query.lower()
         assert b"(1, $1)" in cur._query.query.lower()
@@ -251,7 +264,7 @@ def test_context(conn, recwarn):
 def test_close_no_clobber(conn):
     with pytest.raises(e.DivisionByZero):
         with conn.cursor("foo") as cur:
-            cur.execute("select 1 / %s", (0,))
+            cur.execute(ph(cur, "select 1 / %s"), (0,))
             cur.fetchall()
 
 
@@ -266,10 +279,12 @@ def test_warn_close(conn, recwarn, gc_collect):
 
 def test_execute_reuse(conn):
     with conn.cursor("foo") as cur:
-        cur.execute("select generate_series(1, %s) as foo", (3,))
+        query = ph(cur, "select generate_series(1, %s) as foo")
+        cur.execute(query, (3,))
         assert cur.fetchone() == (1,)
 
-        cur.execute("select %s::text as bar, %s::text as baz", ("hello", "world"))
+        query = ph(cur, "select %s::text as bar, %s::text as baz")
+        cur.execute(query, ("hello", "world"))
         assert cur.fetchone() == ("hello", "world")
         assert cur.description[0].name == "bar"
         assert cur.description[0].type_code == cur.adapters.types["text"].oid
@@ -289,13 +304,13 @@ def test_execute_error(conn, stmt):
 def test_executemany(conn):
     cur = conn.cursor("foo")
     with pytest.raises(e.NotSupportedError):
-        cur.executemany("select %s", [(1,), (2,)])
+        cur.executemany(ph(cur, "select %s"), [(1,), (2,)])
     cur.close()
 
 
 def test_fetchone(conn):
     with conn.cursor("foo") as cur:
-        cur.execute("select generate_series(1, %s) as bar", (2,))
+        cur.execute(ph(cur, "select generate_series(1, %s) as bar"), (2,))
         assert cur.fetchone() == (1,)
         assert cur.fetchone() == (2,)
         assert cur.fetchone() is None
@@ -303,7 +318,7 @@ def test_fetchone(conn):
 
 def test_fetchmany(conn):
     with conn.cursor("foo") as cur:
-        cur.execute("select generate_series(1, %s) as bar", (5,))
+        cur.execute(ph(cur, "select generate_series(1, %s) as bar"), (5,))
         assert cur.fetchmany(3) == [(1,), (2,), (3,)]
         assert cur.fetchone() == (4,)
         assert cur.fetchmany(3) == [(5,)]
@@ -312,12 +327,12 @@ def test_fetchmany(conn):
 
 def test_fetchall(conn):
     with conn.cursor("foo") as cur:
-        cur.execute("select generate_series(1, %s) as bar", (3,))
+        cur.execute(ph(cur, "select generate_series(1, %s) as bar"), (3,))
         assert cur.fetchall() == [(1,), (2,), (3,)]
         assert cur.fetchall() == []
 
     with conn.cursor("foo") as cur:
-        cur.execute("select generate_series(1, %s) as bar", (3,))
+        cur.execute(ph(cur, "select generate_series(1, %s) as bar"), (3,))
         assert cur.fetchone() == (1,)
         assert cur.fetchall() == [(2,), (3,)]
         assert cur.fetchall() == []
@@ -325,13 +340,14 @@ def test_fetchall(conn):
 
 def test_nextset(conn):
     with conn.cursor("foo") as cur:
-        cur.execute("select generate_series(1, %s) as bar", (3,))
+        cur.execute(ph(cur, "select generate_series(1, %s) as bar"), (3,))
         assert not cur.nextset()
 
 
 def test_no_result(conn):
     with conn.cursor("foo") as cur:
-        cur.execute("select generate_series(1, %s) as bar where false", (3,))
+        query = ph(cur, "select generate_series(1, %s) as bar where false")
+        cur.execute(query, (3,))
         assert len(cur.description) == 1
         assert cur.fetchall() == []
 
@@ -401,12 +417,12 @@ def test_rownumber(conn):
 
 def test_iter(conn):
     with conn.cursor("foo") as cur:
-        cur.execute("select generate_series(1, %s) as bar", (3,))
+        cur.execute(ph(cur, "select generate_series(1, %s) as bar"), (3,))
         recs = list(cur)
     assert recs == [(1,), (2,), (3,)]
 
     with conn.cursor("foo") as cur:
-        cur.execute("select generate_series(1, %s) as bar", (3,))
+        cur.execute(ph(cur, "select generate_series(1, %s) as bar"), (3,))
         assert cur.fetchone() == (1,)
         recs = list(cur)
     assert recs == [(2,), (3,)]
@@ -414,7 +430,7 @@ def test_iter(conn):
 
 def test_iter_rownumber(conn):
     with conn.cursor("foo") as cur:
-        cur.execute("select generate_series(1, %s) as bar", (3,))
+        cur.execute(ph(cur, "select generate_series(1, %s) as bar"), (3,))
         for row in cur:
             assert cur.rownumber == row[0]
 
@@ -423,7 +439,7 @@ def test_itersize(conn, commands):
     with conn.cursor("foo") as cur:
         assert cur.itersize == 100
         cur.itersize = 2
-        cur.execute("select generate_series(1, %s) as bar", (3,))
+        cur.execute(ph(cur, "select generate_series(1, %s) as bar"), (3,))
         commands.popall()  # flush begin and other noise
 
         list(cur)

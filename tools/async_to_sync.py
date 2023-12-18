@@ -280,6 +280,7 @@ class RenameAsyncToSync(ast.NodeTransformer):
         "AsyncPipeline": "Pipeline",
         "AsyncQueuedLibpqWriter": "QueuedLibpqWriter",
         "AsyncRawCursor": "RawCursor",
+        "AsyncRawServerCursor": "RawServerCursor",
         "AsyncRowFactory": "RowFactory",
         "AsyncScheduler": "Scheduler",
         "AsyncServerCursor": "ServerCursor",
